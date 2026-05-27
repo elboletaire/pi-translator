@@ -18,9 +18,7 @@ export function stripMarkdownFences(text: string): string {
   if (!text.startsWith("```")) {
     return text
   }
-  return text
-    .replace(/^```[a-zA-Z]*\n/u, "")
-    .replace(/\n```\s*\n?$/u, "")
+  return text.replace(/^```[a-zA-Z]*\n/u, "").replace(/\n```\s*\n?$/u, "")
 }
 
 export function splitKeepNewlines(text: string): string[] {
@@ -146,9 +144,7 @@ export function writeCsvEntries(
   entries: TranslationEntry[],
   header?: string[] | null,
 ): void {
-  const headerLine = header
-    ? `${header.map(escapeCsvCell).join(",")}\n`
-    : ""
+  const headerLine = header ? `${header.map(escapeCsvCell).join(",")}\n` : ""
   fs.writeFileSync(path, headerLine + serializeCsvEntries(entries), "utf8")
 }
 
@@ -159,4 +155,102 @@ export function readLines(path: string): string[] {
 
 export function writeLines(path: string, lines: Iterable<string>): void {
   fs.writeFileSync(path, Array.from(lines).join(""), "utf8")
+}
+
+export function flattenJson(
+  obj: unknown,
+  prefix: string = "",
+): TranslationEntry[] {
+  const entries: TranslationEntry[] = []
+
+  if (obj === null || typeof obj !== "object") {
+    // Skip primitives
+    return entries
+  }
+
+  if (Array.isArray(obj)) {
+    obj.forEach((item, index) => {
+      if (typeof item === "string") {
+        entries.push({
+          key: prefix ? `${prefix}.${index}` : String(index),
+          sentence: item,
+          context: prefix || "",
+        })
+      } else if (Array.isArray(item) || typeof item === "object") {
+        // Recurse into nested arrays/objects
+        entries.push(
+          ...flattenJson(item, prefix ? `${prefix}.${index}` : String(index)),
+        )
+      }
+      // Skip primitives (numbers, booleans, null)
+    })
+  } else if (typeof obj === "object") {
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === "string") {
+        entries.push({
+          key: prefix ? `${prefix}.${key}` : key,
+          sentence: value,
+          context: prefix || "",
+        })
+      } else if (Array.isArray(value) || typeof value === "object") {
+        // Recurse into nested structures
+        entries.push(...flattenJson(value, prefix ? `${prefix}.${key}` : key))
+      }
+      // Skip primitives (numbers, booleans, null)
+    }
+  }
+
+  return entries
+}
+
+export function unflattenJson(
+  original: unknown,
+  translations: TranslationEntry[],
+): unknown {
+  const translationMap = new Map<string, string>()
+  for (const entry of translations) {
+    translationMap.set(entry.key, entry.sentence)
+  }
+
+  function substituteStrings(
+    node: unknown,
+    prefix: string,
+    map: Map<string, string>,
+  ): unknown {
+    if (typeof node === "string") {
+      return map.get(prefix) ?? node
+    }
+    if (Array.isArray(node)) {
+      return node.map((item, index) =>
+        substituteStrings(
+          item,
+          prefix ? `${prefix}.${index}` : String(index),
+          map,
+        ),
+      )
+    }
+    if (typeof node === "object" && node !== null) {
+      const result: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(node)) {
+        result[key] = substituteStrings(
+          value,
+          prefix ? `${prefix}.${key}` : key,
+          map,
+        )
+      }
+      return result
+    }
+    // Primitives (number, boolean, null) pass through unchanged
+    return node
+  }
+
+  return substituteStrings(original, "", translationMap)
+}
+
+export function readJsonFile(path: string): unknown {
+  return JSON.parse(fs.readFileSync(path, "utf8"))
+}
+
+export function writeJsonFile(path: string, obj: unknown): void {
+  fs.writeFileSync(path, JSON.stringify(obj, null, 2) + "\n", "utf8")
 }

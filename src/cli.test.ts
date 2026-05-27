@@ -6,7 +6,7 @@ import { Writable } from "node:stream"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { buildPiCommand, main, parseArgs } from "./cli"
-import { parseCsvEntries, serializeCsvEntries } from "./io"
+import { flattenJson, parseCsvEntries, serializeCsvEntries } from "./io"
 import type { TranslationEntry } from "./types"
 
 class StringWritable extends Writable {
@@ -111,6 +111,31 @@ describe("parse args", () => {
     ])
     expect(args.inputFile).toBe("in.csv")
     expect(args.outputFile).toBe("out.csv")
+  })
+
+  it("accepts json input format", () => {
+    const args = parseArgs([
+      "in.json",
+      "out.json",
+      "--setup-context",
+      "ctx",
+      "--input-format",
+      "json",
+    ])
+    expect(args.inputFormat).toBe("json")
+  })
+
+  it("rejects unknown input format with updated error message", () => {
+    expect(() =>
+      parseArgs([
+        "in.json",
+        "out.json",
+        "--setup-context",
+        "ctx",
+        "--input-format",
+        "invalid",
+      ]),
+    ).toThrow("--input-format must be one of: plain, csv3, json")
   })
 })
 
@@ -254,10 +279,21 @@ describe("main orchestration", () => {
       { key: "k1", sentence: "s1", context: "c1" },
       { key: "k2", sentence: "s2", context: "c2" },
     ]
-    fs.writeFileSync(inputFile, header + serializeCsvEntries(sourceEntries), "utf8")
+    fs.writeFileSync(
+      inputFile,
+      header + serializeCsvEntries(sourceEntries),
+      "utf8",
+    )
 
     const exitCode = await main(
-      [inputFile, outputFile, "--setup-context", "ctx", "--input-format", "csv3"],
+      [
+        inputFile,
+        outputFile,
+        "--setup-context",
+        "ctx",
+        "--input-format",
+        "csv3",
+      ],
       {
         stderr: new StringWritable(),
         translateTextUnitsBatch: async ({ entries }) =>
@@ -270,7 +306,11 @@ describe("main orchestration", () => {
     expect(content).toMatch(/^ID,Text,Comment\n/u)
     const outEntries = parseCsvEntries(content)
     expect(outEntries).toHaveLength(2)
-    expect(outEntries[0]).toEqual({ key: "k1", sentence: "t-k1", context: "c1" })
+    expect(outEntries[0]).toEqual({
+      key: "k1",
+      sentence: "t-k1",
+      context: "c1",
+    })
   })
 
   it("preserves csv header row in plain mode", async () => {
@@ -318,7 +358,8 @@ describe("main orchestration", () => {
         translateBatches: async () => {
           // Simulate LLM wrapping output in a code fence
           const raw = "```\nline one\nline two\n```\n"
-          const { splitKeepNewlines, stripMarkdownFences } = await import("./io")
+          const { splitKeepNewlines, stripMarkdownFences } =
+            await import("./io")
           return splitKeepNewlines(stripMarkdownFences(raw))
         },
       },
@@ -329,5 +370,151 @@ describe("main orchestration", () => {
     expect(content).not.toContain("```")
     expect(content).toContain("line one")
     expect(content).toContain("line two")
+  })
+})
+
+describe("main orchestration - json format", () => {
+  it("json branch: happy path translates nested JSON and writes output", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.json")
+    const outputFile = path.join(dir, "out.json")
+
+    const originalObj = {
+      actions: { cancel: "Cancel", end: "End" },
+      count: 42,
+    }
+    fs.writeFileSync(inputFile, JSON.stringify(originalObj), "utf8")
+
+    const stderr = new StringWritable()
+
+    const exitCode = await main(
+      [
+        inputFile,
+        outputFile,
+        "--setup-context",
+        "ctx",
+        "--input-format",
+        "json",
+        "--batch-size",
+        "10",
+      ],
+      {
+        stderr,
+        flattenJson: (obj) => flattenJson(obj),
+        readJsonFile: (path) => JSON.parse(fs.readFileSync(path, "utf8")),
+        translateTextUnitsBatch: async ({ entries }) =>
+          entries.map((e) => `translated-${e.key}`),
+      },
+    )
+
+    expect(exitCode).toBe(0)
+    const resultObj = JSON.parse(fs.readFileSync(outputFile, "utf8"))
+    expect(resultObj).toEqual({
+      actions: {
+        cancel: "translated-actions.cancel",
+        end: "translated-actions.end",
+      },
+      count: 42,
+    })
+  })
+
+  it("json branch: checkpoint resume loads partial translations and continues", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.json")
+    const outputFile = path.join(dir, "out.json")
+    const checkpointFile = `${outputFile}.part`
+
+    const originalObj = {
+      actions: { cancel: "Cancel", end: "End", pause: "Pause" },
+    }
+    fs.writeFileSync(inputFile, JSON.stringify(originalObj), "utf8")
+
+    // Pre-create checkpoint with first entry already translated
+    const checkpointEntries = [
+      { key: "actions.cancel", sentence: "Annuler", context: "actions" },
+    ]
+    fs.writeFileSync(
+      checkpointFile,
+      serializeCsvEntries(checkpointEntries),
+      "utf8",
+    )
+
+    const stderr = new StringWritable()
+    let callCount = 0
+
+    const exitCode = await main(
+      [
+        inputFile,
+        outputFile,
+        "--setup-context",
+        "ctx",
+        "--input-format",
+        "json",
+        "--batch-size",
+        "10",
+      ],
+      {
+        stderr,
+        flattenJson: (obj) => flattenJson(obj),
+        readJsonFile: (path) => JSON.parse(fs.readFileSync(path, "utf8")),
+        translateTextUnitsBatch: async ({ entries }) => {
+          callCount += 1
+          return entries.map((e) => `translated-${e.key}`)
+        },
+      },
+    )
+
+    expect(exitCode).toBe(0)
+    expect(callCount).toBe(1) // Should only translate remaining 2 entries
+    const resultObj = JSON.parse(fs.readFileSync(outputFile, "utf8"))
+    expect(resultObj).toEqual({
+      actions: {
+        cancel: "Annuler",
+        end: "translated-actions.end",
+        pause: "translated-actions.pause",
+      },
+    })
+  })
+
+  it("json branch: checkpoint key mismatch throws error", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.json")
+    const outputFile = path.join(dir, "out.json")
+    const checkpointFile = `${outputFile}.part`
+
+    const originalObj = { actions: { cancel: "Cancel" } }
+    fs.writeFileSync(inputFile, JSON.stringify(originalObj), "utf8")
+
+    // Pre-create checkpoint with wrong key
+    const checkpointEntries = [
+      { key: "wrong.key", sentence: "Wrong", context: "actions" },
+    ]
+    fs.writeFileSync(
+      checkpointFile,
+      serializeCsvEntries(checkpointEntries),
+      "utf8",
+    )
+
+    const stderr = new StringWritable()
+
+    await expect(
+      main(
+        [
+          inputFile,
+          outputFile,
+          "--setup-context",
+          "ctx",
+          "--input-format",
+          "json",
+        ],
+        {
+          stderr,
+          flattenJson: (obj) => flattenJson(obj),
+          readJsonFile: (path) => JSON.parse(fs.readFileSync(path, "utf8")),
+          translateTextUnitsBatch: async ({ entries }) =>
+            entries.map((e) => `translated-${e.key}`),
+        },
+      ),
+    ).rejects.toThrow("checkpoint key mismatch")
   })
 })

@@ -4,7 +4,7 @@ export interface TranslationEntry {
   context: string
 }
 
-export type InputFormat = "plain" | "csv3"
+export type InputFormat = "plain" | "csv3" | "json"
 
 export interface CliArgs {
   inputFile: string

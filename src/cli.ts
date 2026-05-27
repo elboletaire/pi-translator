@@ -1,14 +1,30 @@
 import fs from "node:fs"
 
-import { isHeaderRow, parseCsvRows, readCsvEntries, readCsvHeader, readLines, writeCsvEntries, writeLines } from "./io"
+import {
+  flattenJson,
+  isHeaderRow,
+  parseCsvRows,
+  readCsvEntries,
+  readCsvHeader,
+  readJsonFile,
+  readLines,
+  unflattenJson,
+  writeCsvEntries,
+  writeJsonFile,
+  writeLines,
+} from "./io"
 import { translateBatches, translateTextUnitsBatch } from "./translator"
 import type { CliArgs, InputFormat, TranslationEntry } from "./types"
 
 interface CliDeps {
+  flattenJson: typeof flattenJson
   readCsvEntries: typeof readCsvEntries
   readCsvHeader: typeof readCsvHeader
-  writeCsvEntries: typeof writeCsvEntries
+  readJsonFile: typeof readJsonFile
   readLines: typeof readLines
+  unflattenJson: typeof unflattenJson
+  writeCsvEntries: typeof writeCsvEntries
+  writeJsonFile: typeof writeJsonFile
   writeLines: typeof writeLines
   translateBatches: typeof translateBatches
   translateTextUnitsBatch: typeof translateTextUnitsBatch
@@ -19,10 +35,14 @@ interface CliDeps {
 }
 
 const defaultDeps: CliDeps = {
+  flattenJson,
   readCsvEntries,
   readCsvHeader,
-  writeCsvEntries,
+  readJsonFile,
   readLines,
+  unflattenJson,
+  writeCsvEntries,
+  writeJsonFile,
   writeLines,
   translateBatches,
   translateTextUnitsBatch,
@@ -78,8 +98,8 @@ export function parseArgs(argv: string[]): CliArgs {
       }
       case "--input-format": {
         const format = getValue()
-        if (format !== "plain" && format !== "csv3") {
-          throw new Error("--input-format must be one of: plain, csv3")
+        if (format !== "plain" && format !== "csv3" && format !== "json") {
+          throw new Error("--input-format must be one of: plain, csv3, json")
         }
         args.inputFormat = format as InputFormat
         break
@@ -228,6 +248,59 @@ export async function main(
     }
 
     deps.writeCsvEntries(tmpFile, translatedEntries, csvHeader)
+    deps.replaceSync(tmpFile, args.outputFile)
+    if (deps.existsSync(checkpointFile)) {
+      deps.removeSync(checkpointFile)
+    }
+
+    return 0
+  }
+
+  if (args.inputFormat === "json") {
+    const original = deps.readJsonFile(args.inputFile)
+    const entries = deps.flattenJson(original)
+    const checkpointFile = checkpointPath(args.outputFile)
+    const tmpFile = tmpOutputPath(args.outputFile)
+    const translatedEntries = loadCheckpointIfAny(checkpointFile, entries, deps)
+    const remainingEntries = entries.slice(translatedEntries.length)
+
+    const chunks: TranslationEntry[][] = []
+    let chunkStart = 0
+    while (chunkStart < remainingEntries.length) {
+      chunks.push(
+        remainingEntries.slice(chunkStart, chunkStart + args.batchSize),
+      )
+      chunkStart += args.batchSize
+    }
+
+    const totalBatches = chunks.length
+
+    for (const [index, chunk] of chunks.entries()) {
+      const currentBatch = index + 1
+      deps.stderr.write(`processing batch ${currentBatch}/${totalBatches}\n`)
+      const translatedSentences = await deps.translateTextUnitsBatch({
+        entries: chunk,
+        setupContext: args.setupContext,
+        command,
+        timeoutSeconds: args.timeoutSeconds,
+        batchIndex: currentBatch,
+        totalBatches,
+        stdinEndToken: args.stdinEndToken,
+      })
+
+      chunk.forEach((entry, sentence) => {
+        translatedEntries.push({
+          key: entry.key,
+          sentence: translatedSentences[sentence],
+          context: entry.context,
+        })
+      })
+
+      deps.writeCsvEntries(checkpointFile, translatedEntries)
+    }
+
+    const translatedObj = deps.unflattenJson(original, translatedEntries)
+    deps.writeJsonFile(tmpFile, translatedObj)
     deps.replaceSync(tmpFile, args.outputFile)
     if (deps.existsSync(checkpointFile)) {
       deps.removeSync(checkpointFile)
