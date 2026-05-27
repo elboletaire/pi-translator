@@ -54,6 +54,10 @@ describe("build command", () => {
       "gpt-5.4",
       "--no-session",
       "--print",
+      "-nc",
+      "-ne",
+      "-ns",
+      "-np",
     ])
   })
 
@@ -73,6 +77,10 @@ describe("build command", () => {
       "abc123",
       "--no-session",
       "--print",
+      "-nc",
+      "-ne",
+      "-ns",
+      "-np",
     ])
   })
 

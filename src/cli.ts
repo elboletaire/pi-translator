@@ -176,7 +176,7 @@ export function buildPiCommand(
   if (args.apiKey) {
     command.push("--api-key", args.apiKey)
   }
-  command.push("--no-session", "--print")
+  command.push("--no-session", "--print", "-nc", "-ne", "-ns", "-np")
   return command
 }
 
