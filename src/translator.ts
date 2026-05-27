@@ -1,7 +1,12 @@
 import { spawn } from "node:child_process"
 import readline from "node:readline"
 
-import { isHeaderRow, parseCsvRows, splitKeepNewlines, stripMarkdownFences } from "./io"
+import {
+  isHeaderRow,
+  parseCsvRows,
+  splitKeepNewlines,
+  stripMarkdownFences,
+} from "./io"
 import type { TranslationEntry } from "./types"
 
 export interface ExchangeIo {
@@ -317,7 +322,12 @@ function parseCsvOutput(text: string): unknown[] {
   }
 
   for (const candidate of candidates) {
-    const rows = parseCsvRows(candidate).filter((row) => row.length > 0)
+    let rows: string[][]
+    try {
+      rows = parseCsvRows(candidate).filter((row) => row.length > 0)
+    } catch {
+      continue
+    }
     if (rows.length === 0) {
       continue
     }
