@@ -789,3 +789,147 @@ describe("main orchestration - missing mode", () => {
     expect(args.mode).toBe("translate")
   })
 })
+
+describe("main orchestration - missing mode (csv3 + plain)", () => {
+  it("csv3: skips already-translated entries and fills gaps", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.csv")
+    const outputFile = path.join(dir, "out.csv")
+
+    const inputEntries = [
+      { key: "k1", sentence: "Hello", context: "" },
+      { key: "k2", sentence: "World", context: "" },
+      { key: "k3", sentence: "Bye", context: "" },
+    ]
+    const outputEntries = [
+      { key: "k1", sentence: "Hallo", context: "" },
+      { key: "k2", sentence: "", context: "" },
+      { key: "k3", sentence: "Tschüss", context: "" },
+    ]
+    fs.writeFileSync(inputFile, serializeCsvEntries(inputEntries), "utf8")
+    fs.writeFileSync(outputFile, serializeCsvEntries(outputEntries), "utf8")
+
+    const translatedKeys: string[] = []
+    await main(
+      [inputFile, outputFile, "--setup-context", "ctx", "--mode", "missing"],
+      {
+        stderr: new StringWritable(),
+        translateTextUnitsBatch: async ({ entries }) => {
+          translatedKeys.push(...entries.map((e) => e.key))
+          return entries.map((e) => `tr-${e.key}`)
+        },
+      },
+    )
+
+    expect(translatedKeys).toEqual(["k2"])
+    const result = parseCsvEntries(fs.readFileSync(outputFile, "utf8"))
+    expect(result.find((e) => e.key === "k1")?.sentence).toBe("Hallo")
+    expect(result.find((e) => e.key === "k2")?.sentence).toBe("tr-k2")
+    expect(result.find((e) => e.key === "k3")?.sentence).toBe("Tschüss")
+  })
+
+  it("plain: skips non-empty lines and fills blank lines", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.txt")
+    const outputFile = path.join(dir, "out.txt")
+
+    fs.writeFileSync(inputFile, "line one\nline two\nline three\n", "utf8")
+    fs.writeFileSync(outputFile, "\nZeile zwei\n\n", "utf8")
+
+    const seenLines: string[] = []
+    await main(
+      [
+        inputFile,
+        outputFile,
+        "--setup-context",
+        "ctx",
+        "--mode",
+        "missing",
+        "--input-format",
+        "plain",
+      ],
+      {
+        stderr: new StringWritable(),
+        translateBatches: async ({ lines }) => {
+          seenLines.push(...lines)
+          return lines.map((l) => `tr:${l}`)
+        },
+      },
+    )
+
+    expect(seenLines).toEqual(["line one\n", "line three\n"])
+    const result = fs.readFileSync(outputFile, "utf8")
+    expect(result).toBe("tr:line one\nZeile zwei\ntr:line three\n")
+  })
+})
+
+describe("main orchestration - review mode (csv3 + plain)", () => {
+  it("csv3: sends existing translations to LLM for review", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.csv")
+    const outputFile = path.join(dir, "out.csv")
+
+    const inputEntries = [
+      { key: "k1", sentence: "Hello", context: "" },
+      { key: "k2", sentence: "World", context: "" },
+    ]
+    const outputEntries = [
+      { key: "k1", sentence: "Hallo", context: "" },
+      { key: "k2", sentence: "Welt", context: "" },
+    ]
+    fs.writeFileSync(inputFile, serializeCsvEntries(inputEntries), "utf8")
+    fs.writeFileSync(outputFile, serializeCsvEntries(outputEntries), "utf8")
+
+    let capturedExisting: Map<string, string> | undefined
+    await main(
+      [inputFile, outputFile, "--setup-context", "ctx", "--mode", "review"],
+      {
+        stderr: new StringWritable(),
+        translateTextUnitsBatchReview: async ({
+          entries,
+          existingTranslations,
+        }) => {
+          capturedExisting = existingTranslations
+          return entries.map((e) => `rev-${e.key}`)
+        },
+      },
+    )
+
+    expect(capturedExisting?.get("k1")).toBe("Hallo")
+    expect(capturedExisting?.get("k2")).toBe("Welt")
+    const result = parseCsvEntries(fs.readFileSync(outputFile, "utf8"))
+    expect(result.find((e) => e.key === "k1")?.sentence).toBe("rev-k1")
+  })
+
+  it("plain: sends output file content (not input) to translateBatches for review", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.txt")
+    const outputFile = path.join(dir, "out.txt")
+
+    fs.writeFileSync(inputFile, "original one\noriginal two\n", "utf8")
+    fs.writeFileSync(outputFile, "translated one\ntranslated two\n", "utf8")
+
+    const seenLines: string[] = []
+    await main(
+      [
+        inputFile,
+        outputFile,
+        "--setup-context",
+        "ctx",
+        "--mode",
+        "review",
+        "--input-format",
+        "plain",
+      ],
+      {
+        stderr: new StringWritable(),
+        translateBatches: async ({ lines }) => {
+          seenLines.push(...lines)
+          return lines
+        },
+      },
+    )
+
+    expect(seenLines).toEqual(["translated one\n", "translated two\n"])
+  })
+})

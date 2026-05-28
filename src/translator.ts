@@ -39,15 +39,19 @@ export function buildPrompt(
   chunkLines_: string[],
   chunkIndex: number,
   totalChunks: number,
+  instruction?: string,
 ): string {
   const chunkText = chunkLines_.join("")
+  const defaultInstruction =
+    "Translate the following lines preserving order and line breaks.\n" +
+    "Return only translated lines, with no explanations."
   return (
     "You are a translation engine.\n" +
     "Follow the setup context exactly.\n\n" +
     `Setup context:\n${setupContext.trim()}\n\n` +
     `Chunk ${chunkIndex}/${totalChunks}\n` +
-    "Translate the following lines preserving order and line breaks.\n" +
-    "Return only translated lines, with no explanations.\n\n" +
+    (instruction ?? defaultInstruction) +
+    "\n\n" +
     chunkText
   )
 }
@@ -60,6 +64,7 @@ export async function translateBatches(params: {
   timeoutSeconds: number
   progressCallback?: (current: number, total: number) => void
   stdinEndToken?: string
+  instruction?: string
   exchange?: ExchangeFn
   io?: ExchangeIo
 }): Promise<string[]> {
@@ -71,6 +76,7 @@ export async function translateBatches(params: {
     timeoutSeconds,
     progressCallback,
     stdinEndToken = "__NEXT_BATCH__",
+    instruction,
     exchange = exchangeWithProvider,
     io,
   } = params
@@ -87,6 +93,7 @@ export async function translateBatches(params: {
       chunk,
       chunkIndex,
       allChunks.length,
+      instruction,
     )
     const rawOutput = await exchange({
       prompt,

@@ -472,9 +472,11 @@ async function runMissingPlain(
       deps.stderr.write(`processing batch ${current}/${total}\n`),
   })
 
+  const missingPosMap = new Map(missingIndices.map((idx, pos) => [idx, pos]))
   const finalLines = inputLines.map((_, i) => {
-    const missingPos = missingIndices.indexOf(i)
-    if (missingPos !== -1) return translatedMissing[missingPos] ?? inputLines[i]
+    const missingPos = missingPosMap.get(i)
+    if (missingPos !== undefined)
+      return translatedMissing[missingPos] ?? inputLines[i]
     return outputLines[i] ?? inputLines[i]
   })
 
@@ -643,12 +645,11 @@ async function runReviewPlain(
     }
   }
 
-  const reviewContext =
-    "You are reviewing an existing translation. " +
+  const reviewInstruction =
+    "Review the following translated lines. " +
     "Only change a line if there is a clear improvement. " +
     "Preserve placeholders and formatting exactly. " +
-    "Return the same line unchanged if it is acceptable.\n\n" +
-    args.setupContext
+    "Return each line unchanged if it is acceptable."
 
   const totalBatches = Math.ceil(outputLines.length / args.batchSize)
   deps.stderr.write(startupInfo(args, outputLines.length, totalBatches) + "\n")
@@ -656,7 +657,8 @@ async function runReviewPlain(
   const reviewed = await deps.translateBatches({
     lines: outputLines,
     batchSize: args.batchSize,
-    setupContext: reviewContext,
+    setupContext: args.setupContext,
+    instruction: reviewInstruction,
     command,
     timeoutSeconds: args.timeoutSeconds,
     stdinEndToken: args.stdinEndToken,
