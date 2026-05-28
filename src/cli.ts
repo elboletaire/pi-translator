@@ -13,7 +13,11 @@ import {
   writeJsonFile,
   writeLines,
 } from "./io"
-import { translateBatches, translateTextUnitsBatch } from "./translator"
+import {
+  translateBatches,
+  translateTextUnitsBatch,
+  translateTextUnitsBatchReview,
+} from "./translator"
 import type { CliArgs, InputFormat, TranslationEntry } from "./types"
 
 interface CliDeps {
@@ -28,6 +32,7 @@ interface CliDeps {
   writeLines: typeof writeLines
   translateBatches: typeof translateBatches
   translateTextUnitsBatch: typeof translateTextUnitsBatch
+  translateTextUnitsBatchReview: typeof translateTextUnitsBatchReview
   existsSync: typeof fs.existsSync
   replaceSync: typeof fs.renameSync
   removeSync: typeof fs.unlinkSync
@@ -47,6 +52,7 @@ const defaultDeps: CliDeps = {
   writeLines,
   translateBatches,
   translateTextUnitsBatch,
+  translateTextUnitsBatchReview,
   existsSync: fs.existsSync,
   replaceSync: fs.renameSync,
   removeSync: fs.unlinkSync,
@@ -76,6 +82,7 @@ export function parseArgs(argv: string[]): CliArgs {
     setupContext: "",
     batchSize: 50,
     inputFormat: inferInputFormat(inputFile),
+    mode: "translate" as TranslationMode,
     timeoutSeconds: 120,
     piCmd: "pi",
     stdinEndToken: "__NEXT_BATCH__",
@@ -113,6 +120,22 @@ export function parseArgs(argv: string[]): CliArgs {
           throw new Error("--input-format must be one of: plain, csv3, json")
         }
         args.inputFormat = format as InputFormat
+        break
+      }
+      case "--mode": {
+        const m = getValue()
+        if (m !== "translate" && m !== "missing" && m !== "review") {
+          throw new Error("--mode must be one of: translate, missing, review")
+        }
+        args.mode = m as TranslationMode
+        break
+      }
+      case "--mode": {
+        const m = getValue()
+        if (m !== "translate" && m !== "missing" && m !== "review") {
+          throw new Error("--mode must be one of: translate, missing, review")
+        }
+        args.mode = m as TranslationMode
         break
       }
       case "--no-autodetect-format":
@@ -222,14 +245,430 @@ function startupInfo(
 ): string {
   const model = args.model ?? "pi default"
   const provider = args.provider ? ` via ${args.provider}` : ""
+  const modeNote = args.mode !== "translate" ? ` [${args.mode}]` : ""
   const resumeNote =
     entries < totalBatches * args.batchSize ? " (resuming)" : ""
   return (
-    `pi-translate: ${args.inputFormat} • ` +
+    `pi-translate: ${args.inputFormat}${modeNote} • ` +
     `${entries} entries • ` +
     `${totalBatches} batches of ${args.batchSize}${resumeNote} • ` +
     `model: ${model}${provider}`
   )
+}
+
+function chunkEntries(
+  entries: TranslationEntry[],
+  batchSize: number,
+): TranslationEntry[][] {
+  const chunks: TranslationEntry[][] = []
+  for (let i = 0; i < entries.length; i += batchSize) {
+    chunks.push(entries.slice(i, i + batchSize))
+  }
+  return chunks
+}
+
+async function runMissingMode(
+  args: CliArgs,
+  deps: CliDeps,
+  command: string[],
+): Promise<number> {
+  if (args.inputFormat === "json") {
+    return runMissingJson(args, deps, command)
+  }
+  if (args.inputFormat === "csv3") {
+    return runMissingCsv3(args, deps, command)
+  }
+  return runMissingPlain(args, deps, command)
+}
+
+async function runMissingJson(
+  args: CliArgs,
+  deps: CliDeps,
+  command: string[],
+): Promise<number> {
+  const original = deps.readJsonFile(args.inputFile)
+  const inputEntries = deps.flattenJson(original)
+
+  const existingMap = new Map<string, string>()
+  if (deps.existsSync(args.outputFile)) {
+    const existingObj = deps.readJsonFile(args.outputFile)
+    for (const e of deps.flattenJson(existingObj)) {
+      if (e.sentence.trim() !== "") existingMap.set(e.key, e.sentence)
+    }
+  }
+
+  const toTranslate = inputEntries.filter((e) => !existingMap.has(e.key))
+
+  const checkpointFile = checkpointPath(args.outputFile)
+  const tmpFile = tmpOutputPath(args.outputFile)
+  const checkpointEntries = loadCheckpointIfAny(
+    checkpointFile,
+    toTranslate,
+    deps,
+  )
+  const remaining = toTranslate.slice(checkpointEntries.length)
+
+  const newTranslationsMap = new Map<string, string>(
+    checkpointEntries.map((e) => [e.key, e.sentence]),
+  )
+
+  const chunks = chunkEntries(remaining, args.batchSize)
+  const totalBatches = chunks.length
+  deps.stderr.write(startupInfo(args, toTranslate.length, totalBatches) + "\n")
+
+  for (const [index, chunk] of chunks.entries()) {
+    const currentBatch = index + 1
+    deps.stderr.write(`processing batch ${currentBatch}/${totalBatches}\n`)
+    const sentences = await deps.translateTextUnitsBatch({
+      entries: chunk,
+      setupContext: args.setupContext,
+      command,
+      timeoutSeconds: args.timeoutSeconds,
+      batchIndex: currentBatch,
+      totalBatches,
+      stdinEndToken: args.stdinEndToken,
+    })
+    chunk.forEach((entry, i) => {
+      const translated = {
+        key: entry.key,
+        sentence: sentences[i],
+        context: entry.context,
+      }
+      checkpointEntries.push(translated)
+      newTranslationsMap.set(entry.key, sentences[i])
+    })
+    deps.writeCsvEntries(checkpointFile, checkpointEntries)
+  }
+
+  const allTranslations = inputEntries.map((e) => ({
+    key: e.key,
+    sentence:
+      existingMap.get(e.key) ?? newTranslationsMap.get(e.key) ?? e.sentence,
+    context: e.context,
+  }))
+
+  const resultObj = deps.unflattenJson(original, allTranslations)
+  deps.writeJsonFile(tmpFile, resultObj)
+  deps.replaceSync(tmpFile, args.outputFile)
+  if (deps.existsSync(checkpointFile)) deps.removeSync(checkpointFile)
+
+  return 0
+}
+
+async function runMissingCsv3(
+  args: CliArgs,
+  deps: CliDeps,
+  command: string[],
+): Promise<number> {
+  const csvHeader = deps.readCsvHeader(args.inputFile)
+  const inputEntries = deps.readCsvEntries(args.inputFile)
+
+  const existingMap = new Map<string, string>()
+  if (deps.existsSync(args.outputFile)) {
+    for (const e of deps.readCsvEntries(args.outputFile)) {
+      if (e.sentence.trim() !== "") existingMap.set(e.key, e.sentence)
+    }
+  }
+
+  const toTranslate = inputEntries.filter((e) => !existingMap.has(e.key))
+
+  const checkpointFile = checkpointPath(args.outputFile)
+  const tmpFile = tmpOutputPath(args.outputFile)
+  const checkpointEntries = loadCheckpointIfAny(
+    checkpointFile,
+    toTranslate,
+    deps,
+  )
+  const remaining = toTranslate.slice(checkpointEntries.length)
+  const newTranslationsMap = new Map<string, string>(
+    checkpointEntries.map((e) => [e.key, e.sentence]),
+  )
+
+  const chunks = chunkEntries(remaining, args.batchSize)
+  const totalBatches = chunks.length
+  deps.stderr.write(startupInfo(args, toTranslate.length, totalBatches) + "\n")
+
+  for (const [index, chunk] of chunks.entries()) {
+    const currentBatch = index + 1
+    deps.stderr.write(`processing batch ${currentBatch}/${totalBatches}\n`)
+    const sentences = await deps.translateTextUnitsBatch({
+      entries: chunk,
+      setupContext: args.setupContext,
+      command,
+      timeoutSeconds: args.timeoutSeconds,
+      batchIndex: currentBatch,
+      totalBatches,
+      stdinEndToken: args.stdinEndToken,
+    })
+    chunk.forEach((entry, i) => {
+      const translated = {
+        key: entry.key,
+        sentence: sentences[i],
+        context: entry.context,
+      }
+      checkpointEntries.push(translated)
+      newTranslationsMap.set(entry.key, sentences[i])
+    })
+    deps.writeCsvEntries(checkpointFile, checkpointEntries)
+  }
+
+  const allTranslations = inputEntries.map((e) => ({
+    key: e.key,
+    sentence:
+      existingMap.get(e.key) ?? newTranslationsMap.get(e.key) ?? e.sentence,
+    context: e.context,
+  }))
+
+  deps.writeCsvEntries(tmpFile, allTranslations, csvHeader)
+  deps.replaceSync(tmpFile, args.outputFile)
+  if (deps.existsSync(checkpointFile)) deps.removeSync(checkpointFile)
+
+  return 0
+}
+
+async function runMissingPlain(
+  args: CliArgs,
+  deps: CliDeps,
+  command: string[],
+): Promise<number> {
+  const allInputLines = deps.readLines(args.inputFile)
+  let inputHeader: string[] = []
+  let inputLines = allInputLines
+  if (allInputLines.length > 0) {
+    const firstRow = parseCsvRows(allInputLines[0].replace(/\r?\n$/u, ""))
+    if (firstRow.length > 0 && isHeaderRow(firstRow[0])) {
+      inputHeader = [allInputLines[0]]
+      inputLines = allInputLines.slice(1)
+    }
+  }
+
+  const outputLines: string[] = []
+  if (deps.existsSync(args.outputFile)) {
+    const allOut = deps.readLines(args.outputFile)
+    const outStart =
+      inputHeader.length > 0 &&
+      allOut.length > 0 &&
+      isHeaderRow(parseCsvRows(allOut[0].replace(/\r?\n$/u, ""))[0] ?? [])
+        ? 1
+        : 0
+    outputLines.push(...allOut.slice(outStart))
+  }
+
+  const missingIndices: number[] = []
+  for (let i = 0; i < inputLines.length; i += 1) {
+    const outLine = outputLines[i] ?? ""
+    if (outLine.trim() === "") missingIndices.push(i)
+  }
+
+  const missingLines = missingIndices.map((i) => inputLines[i])
+  const totalBatches = Math.ceil(missingLines.length / args.batchSize)
+  deps.stderr.write(startupInfo(args, missingLines.length, totalBatches) + "\n")
+
+  const translatedMissing = await deps.translateBatches({
+    lines: missingLines,
+    batchSize: args.batchSize,
+    setupContext: args.setupContext,
+    command,
+    timeoutSeconds: args.timeoutSeconds,
+    stdinEndToken: args.stdinEndToken,
+    progressCallback: (current, total) =>
+      deps.stderr.write(`processing batch ${current}/${total}\n`),
+  })
+
+  const finalLines = inputLines.map((_, i) => {
+    const missingPos = missingIndices.indexOf(i)
+    if (missingPos !== -1) return translatedMissing[missingPos] ?? inputLines[i]
+    return outputLines[i] ?? inputLines[i]
+  })
+
+  deps.writeLines(args.outputFile, [...inputHeader, ...finalLines])
+  return 0
+}
+
+async function runReviewMode(
+  args: CliArgs,
+  deps: CliDeps,
+  command: string[],
+): Promise<number> {
+  if (args.inputFormat === "json") {
+    return runReviewJson(args, deps, command)
+  }
+  if (args.inputFormat === "csv3") {
+    return runReviewCsv3(args, deps, command)
+  }
+  return runReviewPlain(args, deps, command)
+}
+
+async function runReviewJson(
+  args: CliArgs,
+  deps: CliDeps,
+  command: string[],
+): Promise<number> {
+  if (!deps.existsSync(args.outputFile)) {
+    throw new Error(
+      `--mode review requires an existing output file: ${args.outputFile} not found`,
+    )
+  }
+
+  const original = deps.readJsonFile(args.inputFile)
+  const inputEntries = deps.flattenJson(original)
+
+  const existingTranslations = new Map<string, string>()
+  for (const e of deps.flattenJson(deps.readJsonFile(args.outputFile))) {
+    existingTranslations.set(e.key, e.sentence)
+  }
+
+  const checkpointFile = checkpointPath(args.outputFile)
+  const tmpFile = tmpOutputPath(args.outputFile)
+  const checkpointEntries = loadCheckpointIfAny(
+    checkpointFile,
+    inputEntries,
+    deps,
+  )
+  const remaining = inputEntries.slice(checkpointEntries.length)
+
+  const chunks = chunkEntries(remaining, args.batchSize)
+  const totalBatches = chunks.length
+  deps.stderr.write(startupInfo(args, inputEntries.length, totalBatches) + "\n")
+
+  for (const [index, chunk] of chunks.entries()) {
+    const currentBatch = index + 1
+    deps.stderr.write(`processing batch ${currentBatch}/${totalBatches}\n`)
+    const reviewed = await deps.translateTextUnitsBatchReview({
+      entries: chunk,
+      existingTranslations,
+      setupContext: args.setupContext,
+      command,
+      timeoutSeconds: args.timeoutSeconds,
+      batchIndex: currentBatch,
+      totalBatches,
+      stdinEndToken: args.stdinEndToken,
+    })
+    chunk.forEach((entry, i) => {
+      checkpointEntries.push({
+        key: entry.key,
+        sentence: reviewed[i],
+        context: entry.context,
+      })
+    })
+    deps.writeCsvEntries(checkpointFile, checkpointEntries)
+  }
+
+  const reviewedObj = deps.unflattenJson(original, checkpointEntries)
+  deps.writeJsonFile(tmpFile, reviewedObj)
+  deps.replaceSync(tmpFile, args.outputFile)
+  if (deps.existsSync(checkpointFile)) deps.removeSync(checkpointFile)
+
+  return 0
+}
+
+async function runReviewCsv3(
+  args: CliArgs,
+  deps: CliDeps,
+  command: string[],
+): Promise<number> {
+  if (!deps.existsSync(args.outputFile)) {
+    throw new Error(
+      `--mode review requires an existing output file: ${args.outputFile} not found`,
+    )
+  }
+
+  const csvHeader = deps.readCsvHeader(args.inputFile)
+  const inputEntries = deps.readCsvEntries(args.inputFile)
+
+  const existingTranslations = new Map<string, string>()
+  for (const e of deps.readCsvEntries(args.outputFile)) {
+    existingTranslations.set(e.key, e.sentence)
+  }
+
+  const checkpointFile = checkpointPath(args.outputFile)
+  const tmpFile = tmpOutputPath(args.outputFile)
+  const checkpointEntries = loadCheckpointIfAny(
+    checkpointFile,
+    inputEntries,
+    deps,
+  )
+  const remaining = inputEntries.slice(checkpointEntries.length)
+
+  const chunks = chunkEntries(remaining, args.batchSize)
+  const totalBatches = chunks.length
+  deps.stderr.write(startupInfo(args, inputEntries.length, totalBatches) + "\n")
+
+  for (const [index, chunk] of chunks.entries()) {
+    const currentBatch = index + 1
+    deps.stderr.write(`processing batch ${currentBatch}/${totalBatches}\n`)
+    const reviewed = await deps.translateTextUnitsBatchReview({
+      entries: chunk,
+      existingTranslations,
+      setupContext: args.setupContext,
+      command,
+      timeoutSeconds: args.timeoutSeconds,
+      batchIndex: currentBatch,
+      totalBatches,
+      stdinEndToken: args.stdinEndToken,
+    })
+    chunk.forEach((entry, i) => {
+      checkpointEntries.push({
+        key: entry.key,
+        sentence: reviewed[i],
+        context: entry.context,
+      })
+    })
+    deps.writeCsvEntries(checkpointFile, checkpointEntries)
+  }
+
+  deps.writeCsvEntries(tmpFile, checkpointEntries, csvHeader)
+  deps.replaceSync(tmpFile, args.outputFile)
+  if (deps.existsSync(checkpointFile)) deps.removeSync(checkpointFile)
+
+  return 0
+}
+
+async function runReviewPlain(
+  args: CliArgs,
+  deps: CliDeps,
+  command: string[],
+): Promise<number> {
+  if (!deps.existsSync(args.outputFile)) {
+    throw new Error(
+      `--mode review requires an existing output file: ${args.outputFile} not found`,
+    )
+  }
+
+  const allInputLines = deps.readLines(args.inputFile)
+  let inputHeader: string[] = []
+  let inputLines = allInputLines
+  if (allInputLines.length > 0) {
+    const firstRow = parseCsvRows(allInputLines[0].replace(/\r?\n$/u, ""))
+    if (firstRow.length > 0 && isHeaderRow(firstRow[0])) {
+      inputHeader = [allInputLines[0]]
+      inputLines = allInputLines.slice(1)
+    }
+  }
+
+  const reviewContext =
+    "You are reviewing an existing translation. " +
+    "Only change a line if there is a clear improvement. " +
+    "Preserve placeholders and formatting exactly. " +
+    "Return the same line unchanged if it is acceptable.\n\n" +
+    args.setupContext
+
+  const totalBatches = Math.ceil(inputLines.length / args.batchSize)
+  deps.stderr.write(startupInfo(args, inputLines.length, totalBatches) + "\n")
+
+  const reviewed = await deps.translateBatches({
+    lines: inputLines,
+    batchSize: args.batchSize,
+    setupContext: reviewContext,
+    command,
+    timeoutSeconds: args.timeoutSeconds,
+    stdinEndToken: args.stdinEndToken,
+    progressCallback: (current, total) =>
+      deps.stderr.write(`processing batch ${current}/${total}\n`),
+  })
+
+  deps.writeLines(args.outputFile, [...inputHeader, ...reviewed])
+  return 0
 }
 
 export async function main(
@@ -247,6 +686,13 @@ export async function main(
     }
   }
   const command = buildPiCommand(args)
+
+  if (args.mode === "missing") {
+    return runMissingMode(args, deps, command)
+  }
+  if (args.mode === "review") {
+    return runReviewMode(args, deps, command)
+  }
 
   if (args.inputFormat === "csv3") {
     const csvHeader = deps.readCsvHeader(args.inputFile)

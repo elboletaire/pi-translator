@@ -204,6 +204,71 @@ export async function translateTextUnitsBatch(params: {
   return normalizeBatchItems(parsed, rawOutput, entries)
 }
 
+export async function translateTextUnitsBatchReview(params: {
+  entries: TranslationEntry[]
+  existingTranslations: Map<string, string>
+  setupContext: string
+  command: string[]
+  timeoutSeconds: number
+  batchIndex: number
+  totalBatches: number
+  stdinEndToken?: string
+  exchange?: ExchangeFn
+  io?: ExchangeIo
+}): Promise<string[]> {
+  const {
+    entries,
+    existingTranslations,
+    setupContext,
+    command,
+    timeoutSeconds,
+    batchIndex,
+    totalBatches,
+    stdinEndToken = "__NEXT_BATCH__",
+    exchange = exchangeWithProvider,
+    io,
+  } = params
+
+  if (entries.length === 0) {
+    return []
+  }
+
+  const payload = entries.map((entry) => ({
+    key: entry.key,
+    original: entry.sentence,
+    current: existingTranslations.get(entry.key) ?? "",
+  }))
+
+  const reviewInstruction =
+    "You are reviewing an existing translation. " +
+    "Only change it if there is a clear improvement. " +
+    "Preserve style, terminology and placeholders exactly. " +
+    "Return the same translation unchanged if it is acceptable.\n"
+
+  const prompt =
+    reviewInstruction +
+    "Do not translate keys.\n" +
+    `Batch ${batchIndex}/${totalBatches}\n` +
+    `Return ONLY a JSON array with exactly ${entries.length} reviewed strings.\n` +
+    "Keep the same order as input.\n\n" +
+    `Setup context:\n${setupContext.trim()}\n\n` +
+    `Entries (original + current translation):\n${JSON.stringify(payload)}\n`
+
+  const rawOutput = await exchange({
+    prompt,
+    command,
+    timeoutSeconds,
+    io,
+    stdinEndToken,
+  })
+
+  const parsed = parseBatchOutput(rawOutput)
+  if (parsed.length !== entries.length) {
+    throw new Error("model returned unexpected number of reviewed entries")
+  }
+  return normalizeBatchItems(parsed, rawOutput, entries)
+}
+
 function parseBatchOutput(text: string): unknown[] {
   try {
     return parseJsonArrayOutput(text)

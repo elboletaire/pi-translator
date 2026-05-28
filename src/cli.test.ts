@@ -644,3 +644,56 @@ describe("main orchestration - json format", () => {
     ).rejects.toThrow("checkpoint key mismatch")
   })
 })
+
+describe("main orchestration - review mode", () => {
+  it("json: sends existing translations and returns reviewed result", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.json")
+    const outputFile = path.join(dir, "out.json")
+
+    fs.writeFileSync(
+      inputFile,
+      JSON.stringify({ a: "Hello", b: "World" }),
+      "utf8",
+    )
+    fs.writeFileSync(
+      outputFile,
+      JSON.stringify({ a: "Hallo", b: "Welt" }),
+      "utf8",
+    )
+
+    let capturedExisting: Map<string, string> | undefined
+    await main(
+      [inputFile, outputFile, "--setup-context", "ctx", "--mode", "review"],
+      {
+        stderr: new StringWritable(),
+        translateTextUnitsBatchReview: async ({
+          entries,
+          existingTranslations,
+        }) => {
+          capturedExisting = existingTranslations
+          return entries.map((e) => `reviewed-${e.key}`)
+        },
+      },
+    )
+
+    expect(capturedExisting?.get("a")).toBe("Hallo")
+    expect(capturedExisting?.get("b")).toBe("Welt")
+    const result = JSON.parse(fs.readFileSync(outputFile, "utf8"))
+    expect(result).toEqual({ a: "reviewed-a", b: "reviewed-b" })
+  })
+
+  it("json: throws if output file does not exist", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.json")
+    const outputFile = path.join(dir, "out.json")
+    fs.writeFileSync(inputFile, JSON.stringify({ a: "Hello" }), "utf8")
+
+    await expect(
+      main(
+        [inputFile, outputFile, "--setup-context", "ctx", "--mode", "review"],
+        { stderr: new StringWritable() },
+      ),
+    ).rejects.toThrow("requires an existing output file")
+  })
+})

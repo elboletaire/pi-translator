@@ -9,6 +9,7 @@ import {
   translateBatches,
   translateTextUnit,
   translateTextUnitsBatch,
+  translateTextUnitsBatchReview,
 } from "./translator"
 
 class StringWritable extends Writable {
@@ -299,5 +300,37 @@ describe("translation engine", () => {
     expect(output.data).toContain("BEGIN BATCH PROMPT")
     expect(output.data).toContain("PROMPT BODY")
     expect(error.data).toContain("<NEXT>")
+  })
+})
+
+describe("translation engine review", () => {
+  it("translateTextUnitsBatchReview: sends original and current translation in prompt", async () => {
+    let capturedPrompt = ""
+    const entries = [
+      { key: "a", sentence: "Hello", context: "" },
+      { key: "b", sentence: "World", context: "" },
+    ]
+    const existingTranslations = new Map([
+      ["a", "Hallo"],
+      ["b", "Welt"],
+    ])
+
+    await translateTextUnitsBatchReview({
+      entries,
+      existingTranslations,
+      setupContext: "ctx",
+      command: ["pi"],
+      timeoutSeconds: 30,
+      batchIndex: 1,
+      totalBatches: 1,
+      exchange: async ({ prompt }) => {
+        capturedPrompt = prompt
+        return '["Hallo", "Welt"]'
+      },
+    })
+
+    expect(capturedPrompt).toContain("reviewing an existing translation")
+    expect(capturedPrompt).toContain('"original":"Hello"')
+    expect(capturedPrompt).toContain('"current":"Hallo"')
   })
 })
