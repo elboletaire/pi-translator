@@ -294,6 +294,7 @@ export async function translateTextUnitsBatchReview(params: {
     "Do not translate keys.\n" +
     `Batch ${batchIndex}/${totalBatches}\n` +
     `Return ONLY a JSON array with exactly ${entries.length} reviewed strings.\n` +
+    "No explanations, summaries, or commentary — output the JSON array and nothing else.\n" +
     "Keep the same order as input.\n\n" +
     `Setup context:\n${setupContext.trim()}\n\n` +
     `Entries (original + current translation):\n${JSON.stringify(payload)}\n`
