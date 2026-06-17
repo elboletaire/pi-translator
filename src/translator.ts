@@ -9,6 +9,14 @@ import {
 } from "./io"
 import type { TranslationEntry } from "./types"
 
+/**
+ * Hardcoded style rule injected into every translation prompt.
+ * Must always be present in the translator context.
+ */
+export const STYLE_RULES =
+  "Never use em dashes (—). " +
+  "Use a normal hyphen (-) instead, or rephrase using parentheses where it makes sense.\n"
+
 export interface ExchangeIo {
   stdin?: NodeJS.ReadableStream
   stdout?: NodeJS.WritableStream
@@ -47,7 +55,9 @@ export function buildPrompt(
     "Return only translated lines, with no explanations."
   return (
     "You are a translation engine.\n" +
-    "Follow the setup context exactly.\n\n" +
+    "Follow the setup context exactly.\n" +
+    STYLE_RULES +
+    "\n" +
     `Setup context:\n${setupContext.trim()}\n\n` +
     `Chunk ${chunkIndex}/${totalChunks}\n` +
     (instruction ?? defaultInstruction) +
@@ -153,7 +163,9 @@ export async function translateTextUnit(params: {
     "You are translating one localization unit.\n" +
     "Do not translate the key.\n" +
     "Use context only as guidance.\n" +
-    "Return only the translated sentence.\n\n" +
+    "Return only the translated sentence.\n" +
+    STYLE_RULES +
+    "\n" +
     `Setup context:\n${setupContext.trim()}\n\n` +
     `Translation key (do not translate):\n${translationKey}\n\n` +
     `Sentence to translate:\n${sentence}\n\n` +
@@ -213,7 +225,9 @@ export async function translateTextUnitsBatch(params: {
     "Use context only as guidance.\n" +
     `Batch ${batchIndex}/${totalBatches}\n` +
     `Return ONLY a JSON array with exactly ${entries.length} translated strings.\n` +
-    "Keep the same order as input.\n\n" +
+    "Keep the same order as input.\n" +
+    STYLE_RULES +
+    "\n" +
     `Setup context:\n${setupContext.trim()}\n\n` +
     `Entries:\n${JSON.stringify(payload)}\n`
 
@@ -295,7 +309,9 @@ export async function translateTextUnitsBatchReview(params: {
     `Batch ${batchIndex}/${totalBatches}\n` +
     `Return ONLY a JSON array with exactly ${entries.length} reviewed strings.\n` +
     "No explanations, summaries, or commentary — output the JSON array and nothing else.\n" +
-    "Keep the same order as input.\n\n" +
+    "Keep the same order as input.\n" +
+    STYLE_RULES +
+    "\n" +
     `Setup context:\n${setupContext.trim()}\n\n` +
     `Entries (original + current translation):\n${JSON.stringify(payload)}\n`
 

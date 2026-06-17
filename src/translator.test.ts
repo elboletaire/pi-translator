@@ -6,6 +6,7 @@ import {
   buildPrompt,
   chunkLines,
   exchangeWithProvider,
+  STYLE_RULES,
   translateBatches,
   translateTextUnit,
   translateTextUnitsBatch,
@@ -44,6 +45,60 @@ describe("prompts", () => {
     expect(prompt).toContain("Always use formal tone.")
     expect(prompt).toContain("Chunk 3/8")
     expect(prompt).toContain("line 1\nline 2\n")
+  })
+
+  it("hardcodes the no-em-dash style rule", () => {
+    expect(STYLE_RULES).toContain("em dash")
+
+    const batchPrompt = buildPrompt("ctx", ["line\n"], 1, 1)
+    expect(batchPrompt).toContain(STYLE_RULES.trim())
+  })
+
+  it("includes the style rule in every prompt builder", async () => {
+    const prompts: string[] = []
+    const capture: typeof exchangeWithProvider = async ({ prompt }) => {
+      prompts.push(prompt)
+      return '["t1"]\n'
+    }
+    const entries: TranslationEntry[] = [
+      { key: "k1", sentence: "s1", context: "c1" },
+    ]
+
+    await translateTextUnit({
+      translationKey: "k1",
+      sentence: "s1",
+      setupContext: "ctx",
+      command: ["pi"],
+      timeoutSeconds: 30,
+      exchange: async ({ prompt }) => {
+        prompts.push(prompt)
+        return "t1\n"
+      },
+    })
+    await translateTextUnitsBatch({
+      entries,
+      setupContext: "ctx",
+      command: ["pi"],
+      timeoutSeconds: 30,
+      batchIndex: 1,
+      totalBatches: 1,
+      exchange: capture,
+    })
+    await translateTextUnitsBatchReview({
+      entries,
+      existingTranslations: new Map([["k1", "current"]]),
+      setupContext: "ctx",
+      command: ["pi"],
+      timeoutSeconds: 30,
+      batchIndex: 1,
+      totalBatches: 1,
+      exchange: capture,
+    })
+
+    expect(prompts).toHaveLength(3)
+    for (const prompt of prompts) {
+      expect(prompt).toContain(STYLE_RULES.trim())
+    }
   })
 })
 
