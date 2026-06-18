@@ -97,6 +97,8 @@ Options:
   --pi-mono-cmd <cmd>              Alias for --pi-cmd
   --provider <id>                  Provider ID passed to pi
                                    (e.g. openai, github-copilot)
+  --allow-extensions               Keep pi extension discovery enabled, so providers
+                                   registered by extensions (e.g. pi-claude-cli) work
   --model <id>                     Model ID passed to pi
                                    (e.g. gpt-5.4, claude-sonnet-4.5)
   --api-key <key>                  API key passed to pi
@@ -158,6 +160,7 @@ export function parseArgs(argv: string[]): CliArgs {
     piCmd: "pi",
     stdinEndToken: "__NEXT_BATCH__",
     maxRetries: 2,
+    allowExtensions: false,
   }
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -204,6 +207,9 @@ export function parseArgs(argv: string[]): CliArgs {
       }
       case "--no-autodetect-format":
         args.inputFormat = "plain"
+        break
+      case "--allow-extensions":
+        args.allowExtensions = true
         break
       case "--timeout-seconds": {
         const timeout = Number.parseInt(getValue(), 10)
@@ -255,7 +261,10 @@ export function parseArgs(argv: string[]): CliArgs {
 }
 
 export function buildPiCommand(
-  args: Pick<CliArgs, "piCmd" | "provider" | "model" | "apiKey">,
+  args: Pick<
+    CliArgs,
+    "piCmd" | "provider" | "model" | "apiKey" | "allowExtensions"
+  >,
 ): string[] {
   if (args.provider === "stdout") {
     return ["stdout"]
@@ -271,7 +280,13 @@ export function buildPiCommand(
   if (args.apiKey) {
     command.push("--api-key", args.apiKey)
   }
-  command.push("--no-session", "--print", "-nc", "-ne", "-ns", "-np")
+  command.push("--no-session", "--print", "-nc", "-ns", "-np")
+  // -ne (--no-extensions) disables extension discovery, which also drops
+  // providers registered by extensions (e.g. pi-claude-cli). Keep extensions
+  // enabled when the user opts in so such providers remain available.
+  if (!args.allowExtensions) {
+    command.push("-ne")
+  }
   return command
 }
 

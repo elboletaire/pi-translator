@@ -50,6 +50,7 @@ describe("build command", () => {
       provider: "openai",
       model: "gpt-5.4",
       apiKey: undefined,
+      allowExtensions: false,
     })
 
     expect(command).toEqual([
@@ -61,9 +62,9 @@ describe("build command", () => {
       "--no-session",
       "--print",
       "-nc",
-      "-ne",
       "-ns",
       "-np",
+      "-ne",
     ])
   })
 
@@ -73,6 +74,7 @@ describe("build command", () => {
       provider: undefined,
       model: "openai/gpt-5.4",
       apiKey: "abc123",
+      allowExtensions: false,
     })
 
     expect(command).toEqual([
@@ -84,7 +86,30 @@ describe("build command", () => {
       "--no-session",
       "--print",
       "-nc",
+      "-ns",
+      "-np",
       "-ne",
+    ])
+  })
+
+  it("omits -ne when extensions are allowed", () => {
+    const command = buildPiCommand({
+      piCmd: "pi",
+      provider: "pi-claude-cli",
+      model: "claude-opus-4-8",
+      apiKey: undefined,
+      allowExtensions: true,
+    })
+
+    expect(command).toEqual([
+      "pi",
+      "--provider",
+      "pi-claude-cli",
+      "--model",
+      "claude-opus-4-8",
+      "--no-session",
+      "--print",
+      "-nc",
       "-ns",
       "-np",
     ])
@@ -96,6 +121,7 @@ describe("build command", () => {
       provider: "stdout",
       model: "ignored",
       apiKey: "ignored",
+      allowExtensions: false,
     })
 
     expect(command).toEqual(["stdout"])

@@ -22,4 +22,5 @@ export interface CliArgs {
   apiKey?: string
   stdinEndToken: string
   maxRetries: number
+  allowExtensions: boolean
 }
