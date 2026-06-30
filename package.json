@@ -1,6 +1,6 @@
 {
   "name": "pi-translator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Batch translator for large files using pi",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -10,8 +10,21 @@
     "type": "git",
     "url": "https://github.com/elboletaire/pi-translator.git"
   },
-  "keywords": ["translator", "batch", "llm", "pi", "csv", "json", "localization", "i18n"],
-  "files": ["dist/", "README.md", "LICENSE"],
+  "keywords": [
+    "translator",
+    "batch",
+    "llm",
+    "pi",
+    "csv",
+    "json",
+    "localization",
+    "i18n"
+  ],
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=18.0.0"
   },
