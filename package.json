@@ -1,7 +1,7 @@
 {
   "name": "pi-translator",
-  "version": "0.1.1",
-  "description": "Batch translator for large files using pi",
+  "version": "0.2.0",
+  "description": "Batch translator for large files using pi or claude",
   "type": "module",
   "license": "GPL-3.0-only",
   "author": "Òscar Casajuana <elboletaire@gmail.com>",
@@ -15,6 +15,7 @@
     "batch",
     "llm",
     "pi",
+    "claude",
     "csv",
     "json",
     "localization",
@@ -29,7 +30,8 @@
     "node": ">=18.0.0"
   },
   "bin": {
-    "pi-translate": "dist/cli.js"
+    "pi-translate": "dist/cli.js",
+    "claude-translate": "dist/cli.js"
   },
   "scripts": {
     "prepublishOnly": "pnpm build",

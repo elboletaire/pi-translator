@@ -6,6 +6,7 @@ export interface TranslationEntry {
 
 export type InputFormat = "plain" | "csv3" | "json"
 export type TranslationMode = "translate" | "missing" | "review"
+export type Tool = "pi" | "claude"
 
 export interface CliArgs {
   inputFile: string
@@ -16,7 +17,9 @@ export interface CliArgs {
   inputFormat: InputFormat
   mode: TranslationMode
   timeoutSeconds: number
+  tool: Tool
   piCmd: string
+  claudeCmd: string
   provider?: string
   model?: string
   apiKey?: string

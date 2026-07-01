@@ -1,4 +1,5 @@
 import fs from "node:fs"
+import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import {
@@ -22,6 +23,7 @@ import {
 import type {
   CliArgs,
   InputFormat,
+  Tool,
   TranslationEntry,
   TranslationMode,
 } from "./types"
@@ -72,10 +74,11 @@ function inferInputFormat(inputFile: string): InputFormat {
   return "plain"
 }
 
-export const HELP_TEXT = `
-Usage: pi-translator <input_file> <output_file> [options]
+export function buildHelpText(name = "pi-translate"): string {
+  return `
+Usage: ${name} <input_file> <output_file> [options]
 
-Batch translator for large files using \`pi\`.
+Batch translator for large files using \`pi\` or \`claude\`.
 
 Arguments:
   input_file                       Input file to translate (plain text, CSV, or JSON)
@@ -93,16 +96,20 @@ Options:
                                      translate  Translate all entries from scratch
                                      missing    Only translate entries missing in the output
                                      review     Review and improve an existing translation
-  --timeout-seconds <n>            Timeout in seconds for each pi call (default: 120)
+  --timeout-seconds <n>            Timeout in seconds for each model call (default: 120)
+  --tool <tool>                    Backend CLI: pi or claude
+                                   (default: claude when invoked as claude-translate, else pi)
   --pi-cmd <cmd>                   Command used to invoke pi (default: pi)
   --pi-mono-cmd <cmd>              Alias for --pi-cmd
-  --provider <id>                  Provider ID passed to pi
+  --claude-cmd <cmd>               Command used to invoke claude (default: claude)
+  --provider <id>                  Provider ID passed to pi (ignored with --tool claude)
                                    (e.g. openai, github-copilot)
   --allow-extensions               Keep pi extension discovery enabled, so providers
                                    registered by extensions (e.g. pi-claude-cli) work
-  --model <id>                     Model ID passed to pi
-                                   (e.g. gpt-5.4, claude-sonnet-4.5)
-  --api-key <key>                  API key passed to pi
+                                   (ignored with --tool claude)
+  --model <id>                     Model ID passed to the backend
+                                   (pi: gpt-5.4, claude-sonnet-4.5; claude: opus, sonnet)
+  --api-key <key>                  API key passed to pi (ignored with --tool claude)
   --stdin-end-token <token>        Token that signals end of model response when using
                                    --provider stdout (default: __NEXT_BATCH__)
   --max-retries <n>                Number of times to retry a failed batch before aborting
@@ -110,24 +117,38 @@ Options:
   -h, --help                       Display this help message
 
 Examples:
-  pi-translator input.txt output.txt \\
+  pi-translate input.txt output.txt \\
     --setup-context "Translate from Spanish to English. Keep character names unchanged." \\
     --provider openai --model gpt-5.4 --batch-size 40
 
-  pi-translator input.csv output.csv \\
+  claude-translate input.csv output.csv \\
     --input-format csv3 \\
     --setup-context "Translate column 2 to English. Keep key and context untouched." \\
-    --mode missing --provider github-copilot --model claude-sonnet-4.5
+    --mode missing --model sonnet
 
-  pi-translator input.json output.json \\
+  pi-translate input.json output.json \\
     --setup-context-file context.md \\
     --mode review --timeout-seconds 180
 
-  pi-translator input.csv output.csv \\
+  pi-translate input.csv output.csv \\
     --input-format csv3 --provider stdout \\
     --stdin-end-token "<NEXT>" \\
     --setup-context "$(cat context.md)"
 `.trimStart()
+}
+
+export const HELP_TEXT = buildHelpText()
+
+export function detectTool(invokedAs?: string): Tool {
+  const base = invokedAs ? path.basename(invokedAs) : ""
+  return /claude/iu.test(base) ? "claude" : "pi"
+}
+
+export function programName(invokedAs?: string): string {
+  return detectTool(invokedAs) === "claude"
+    ? "claude-translate"
+    : "pi-translate"
+}
 
 export class HelpRequestedError extends Error {
   constructor() {
@@ -136,7 +157,10 @@ export class HelpRequestedError extends Error {
   }
 }
 
-export function parseArgs(argv: string[]): CliArgs {
+export function parseArgs(
+  argv: string[],
+  opts: { defaultTool?: Tool } = {},
+): CliArgs {
   const normalizedArgv = argv[0] === "--" ? argv.slice(1) : argv
 
   if (normalizedArgv.includes("--help") || normalizedArgv.includes("-h")) {
@@ -158,7 +182,9 @@ export function parseArgs(argv: string[]): CliArgs {
     inputFormat: inferInputFormat(inputFile),
     mode: "translate" as TranslationMode,
     timeoutSeconds: 120,
+    tool: opts.defaultTool ?? "pi",
     piCmd: "pi",
+    claudeCmd: "claude",
     stdinEndToken: "__NEXT_BATCH__",
     maxRetries: 2,
     allowExtensions: false,
@@ -220,9 +246,20 @@ export function parseArgs(argv: string[]): CliArgs {
         args.timeoutSeconds = timeout
         break
       }
+      case "--tool": {
+        const t = getValue()
+        if (t !== "pi" && t !== "claude") {
+          throw new Error("--tool must be one of: pi, claude")
+        }
+        args.tool = t as Tool
+        break
+      }
       case "--pi-cmd":
       case "--pi-mono-cmd":
         args.piCmd = getValue()
+        break
+      case "--claude-cmd":
+        args.claudeCmd = getValue()
         break
       case "--provider":
         args.provider = getValue()
@@ -261,6 +298,14 @@ export function parseArgs(argv: string[]): CliArgs {
   return args
 }
 
+/**
+ * Tools denied when driving the `claude` CLI. A translation run should never
+ * touch the filesystem or the network, so all built-in tools are disallowed.
+ * This does not affect authentication (unlike `--bare`).
+ */
+export const CLAUDE_DISALLOWED_TOOLS =
+  "Bash Edit Write Read WebFetch WebSearch Glob Grep NotebookEdit Task"
+
 export function buildPiCommand(
   args: Pick<
     CliArgs,
@@ -289,6 +334,28 @@ export function buildPiCommand(
     command.push("-ne")
   }
   return command
+}
+
+export function buildClaudeCommand(
+  args: Pick<CliArgs, "claudeCmd" | "model" | "provider">,
+): string[] {
+  // stdout is a tool-agnostic paste escape hatch handled by the exchange layer.
+  if (args.provider === "stdout") {
+    return ["stdout"]
+  }
+
+  const command = [args.claudeCmd, "-p", "--output-format", "text"]
+  if (args.model) {
+    command.push("--model", args.model)
+  }
+  command.push("--disallowedTools", CLAUDE_DISALLOWED_TOOLS)
+  return command
+}
+
+export function buildCommand(args: CliArgs): string[] {
+  return args.tool === "claude"
+    ? buildClaudeCommand(args)
+    : buildPiCommand(args)
 }
 
 function checkpointPath(outputFile: string): string {
@@ -332,12 +399,14 @@ function startupInfo(
   totalBatches: number,
   resuming: boolean,
 ): string {
-  const model = args.model ?? "pi default"
-  const provider = args.provider ? ` via ${args.provider}` : ""
+  const model = args.model ?? `${args.tool} default`
+  const provider =
+    args.tool === "pi" && args.provider ? ` via ${args.provider}` : ""
   const modeNote = args.mode !== "translate" ? ` [${args.mode}]` : ""
   const resumeNote = resuming ? " (resuming)" : ""
+  const label = args.tool === "claude" ? "claude-translate" : "pi-translate"
   return (
-    `pi-translate: ${args.inputFormat}${modeNote} • ` +
+    `${label}: ${args.inputFormat}${modeNote} • ` +
     `${entries} entries • ` +
     `${totalBatches} batches × ${args.batchSize}${resumeNote} • ` +
     `model: ${model}${provider}`
@@ -826,14 +895,15 @@ async function runReviewPlain(
 export async function main(
   argv: string[] = process.argv.slice(2),
   partialDeps: Partial<CliDeps> = {},
+  invokedAs: string | undefined = process.argv[1],
 ): Promise<number> {
   const deps: CliDeps = { ...defaultDeps, ...partialDeps }
   let args: CliArgs
   try {
-    args = parseArgs(argv)
+    args = parseArgs(argv, { defaultTool: detectTool(invokedAs) })
   } catch (e) {
     if (e instanceof HelpRequestedError) {
-      process.stdout.write(HELP_TEXT)
+      process.stdout.write(buildHelpText(programName(invokedAs)))
       return 0
     }
     throw e
@@ -846,7 +916,18 @@ export async function main(
       )
     }
   }
-  const command = buildPiCommand(args)
+  if (args.tool === "claude") {
+    if (args.provider && args.provider !== "stdout") {
+      deps.stderr.write("--provider is ignored with --tool claude\n")
+    }
+    if (args.apiKey) {
+      deps.stderr.write("--api-key is ignored with --tool claude\n")
+    }
+    if (args.allowExtensions) {
+      deps.stderr.write("--allow-extensions is ignored with --tool claude\n")
+    }
+  }
+  const command = buildCommand(args)
 
   if (args.mode === "missing") {
     return runMissingMode(args, deps, command)

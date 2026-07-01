@@ -6,15 +6,19 @@ import { Writable } from "node:stream"
 import { afterEach, describe, expect, it } from "vitest"
 
 import {
+  CLAUDE_DISALLOWED_TOOLS,
   HELP_TEXT,
   HelpRequestedError,
+  buildClaudeCommand,
+  buildCommand,
   buildPiCommand,
+  detectTool,
   main,
   parseArgs,
 } from "./cli"
 import { flattenJson, parseCsvEntries, serializeCsvEntries } from "./io"
 import { translateBatches } from "./translator"
-import type { TranslationEntry } from "./types"
+import type { CliArgs, TranslationEntry } from "./types"
 
 class StringWritable extends Writable {
   public data = ""
@@ -125,6 +129,134 @@ describe("build command", () => {
     })
 
     expect(command).toEqual(["stdout"])
+  })
+})
+
+describe("detectTool", () => {
+  it("picks claude when invoked as claude-translate", () => {
+    expect(detectTool("/usr/local/bin/claude-translate")).toBe("claude")
+  })
+
+  it("picks pi when invoked as pi-translate", () => {
+    expect(detectTool("/usr/local/bin/pi-translate")).toBe("pi")
+  })
+
+  it("defaults to pi for unknown or missing names", () => {
+    expect(detectTool("/usr/local/bin/node")).toBe("pi")
+    expect(detectTool(undefined)).toBe("pi")
+  })
+})
+
+describe("build claude command", () => {
+  it("includes model and disallowed tools", () => {
+    const command = buildClaudeCommand({
+      claudeCmd: "claude",
+      model: "sonnet",
+      provider: undefined,
+    })
+
+    expect(command).toEqual([
+      "claude",
+      "-p",
+      "--output-format",
+      "text",
+      "--model",
+      "sonnet",
+      "--disallowedTools",
+      CLAUDE_DISALLOWED_TOOLS,
+    ])
+  })
+
+  it("omits the model pair when no model is set", () => {
+    const command = buildClaudeCommand({
+      claudeCmd: "claude",
+      model: undefined,
+      provider: undefined,
+    })
+
+    expect(command).toEqual([
+      "claude",
+      "-p",
+      "--output-format",
+      "text",
+      "--disallowedTools",
+      CLAUDE_DISALLOWED_TOOLS,
+    ])
+  })
+
+  it("uses stdout paste mode regardless of tool", () => {
+    const command = buildClaudeCommand({
+      claudeCmd: "claude",
+      model: "ignored",
+      provider: "stdout",
+    })
+
+    expect(command).toEqual(["stdout"])
+  })
+})
+
+describe("buildCommand dispatch", () => {
+  const base: CliArgs = {
+    inputFile: "in.txt",
+    outputFile: "out.txt",
+    setupContext: "ctx",
+    batchSize: 50,
+    inputFormat: "plain",
+    mode: "translate",
+    timeoutSeconds: 120,
+    tool: "pi",
+    piCmd: "pi",
+    claudeCmd: "claude",
+    stdinEndToken: "__NEXT_BATCH__",
+    maxRetries: 2,
+    allowExtensions: false,
+  }
+
+  it("dispatches to pi by default", () => {
+    expect(buildCommand({ ...base, tool: "pi" })[0]).toBe("pi")
+  })
+
+  it("dispatches to claude when tool is claude", () => {
+    expect(buildCommand({ ...base, tool: "claude", model: "opus" })).toEqual([
+      "claude",
+      "-p",
+      "--output-format",
+      "text",
+      "--model",
+      "opus",
+      "--disallowedTools",
+      CLAUDE_DISALLOWED_TOOLS,
+    ])
+  })
+})
+
+describe("--tool parsing", () => {
+  const required = ["in.txt", "out.txt", "--setup-context", "ctx"]
+
+  it("defaults to the provided defaultTool", () => {
+    expect(parseArgs(required, { defaultTool: "claude" }).tool).toBe("claude")
+  })
+
+  it("lets --tool override the default", () => {
+    expect(
+      parseArgs([...required, "--tool", "pi"], { defaultTool: "claude" }).tool,
+    ).toBe("pi")
+  })
+
+  it("defaults to pi when no defaultTool is given", () => {
+    expect(parseArgs(required).tool).toBe("pi")
+  })
+
+  it("parses --claude-cmd", () => {
+    expect(
+      parseArgs([...required, "--claude-cmd", "my-claude"]).claudeCmd,
+    ).toBe("my-claude")
+  })
+
+  it("rejects an invalid --tool value", () => {
+    expect(() => parseArgs([...required, "--tool", "gpt"])).toThrow(
+      "--tool must be one of: pi, claude",
+    )
   })
 })
 
@@ -574,6 +706,75 @@ describe("main orchestration", () => {
     expect(content).not.toContain("```")
     expect(content).toContain("line one")
     expect(content).toContain("line two")
+  })
+})
+
+describe("main tool selection", () => {
+  it("builds a claude command when invoked as claude-translate", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.txt")
+    const outputFile = path.join(dir, "out.txt")
+    fs.writeFileSync(inputFile, "a\nb\n", "utf8")
+
+    let seenCommand: string[] = []
+    const exitCode = await main(
+      [inputFile, outputFile, "--setup-context", "ctx", "--model", "sonnet"],
+      {
+        stderr: new StringWritable(),
+        translateBatches: async ({ command }) => {
+          seenCommand = command
+          return ["A\n", "B\n"]
+        },
+      },
+      "/usr/local/bin/claude-translate",
+    )
+
+    expect(exitCode).toBe(0)
+    expect(seenCommand).toEqual([
+      "claude",
+      "-p",
+      "--output-format",
+      "text",
+      "--model",
+      "sonnet",
+      "--disallowedTools",
+      CLAUDE_DISALLOWED_TOOLS,
+    ])
+  })
+
+  it("warns and ignores pi-only flags under claude", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.txt")
+    const outputFile = path.join(dir, "out.txt")
+    fs.writeFileSync(inputFile, "a\n", "utf8")
+
+    const stderr = new StringWritable()
+    const exitCode = await main(
+      [
+        inputFile,
+        outputFile,
+        "--setup-context",
+        "ctx",
+        "--tool",
+        "claude",
+        "--provider",
+        "openai",
+        "--api-key",
+        "secret",
+        "--allow-extensions",
+      ],
+      {
+        stderr,
+        translateBatches: async () => ["A\n"],
+      },
+    )
+
+    expect(exitCode).toBe(0)
+    expect(stderr.data).toContain("--provider is ignored with --tool claude")
+    expect(stderr.data).toContain("--api-key is ignored with --tool claude")
+    expect(stderr.data).toContain(
+      "--allow-extensions is ignored with --tool claude",
+    )
   })
 })
 
