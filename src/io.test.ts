@@ -21,7 +21,7 @@ import {
 const tempDirs: string[] = []
 
 function makeTempDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-translator-io-test-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-translator-io-test-"))
   tempDirs.push(dir)
   return dir
 }

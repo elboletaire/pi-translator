@@ -12,6 +12,7 @@ import {
   buildClaudeCommand,
   buildCommand,
   buildPiCommand,
+  detectProgram,
   detectTool,
   main,
   parseArgs,
@@ -36,7 +37,7 @@ class StringWritable extends Writable {
 const tempDirs: string[] = []
 
 function makeTempDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-translator-cli-test-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-translator-cli-test-"))
   tempDirs.push(dir)
   return dir
 }
@@ -147,6 +148,21 @@ describe("detectTool", () => {
   })
 })
 
+describe("detectProgram", () => {
+  it("recognizes the three binaries", () => {
+    expect(detectProgram("/usr/local/bin/llm-translate")).toBe("llm-translate")
+    expect(detectProgram("/usr/local/bin/pi-translate")).toBe("pi-translate")
+    expect(detectProgram("/usr/local/bin/claude-translate")).toBe(
+      "claude-translate",
+    )
+  })
+
+  it("falls back to llm-translate for unknown or missing names", () => {
+    expect(detectProgram("/usr/local/bin/node")).toBe("llm-translate")
+    expect(detectProgram(undefined)).toBe("llm-translate")
+  })
+})
+
 describe("build claude command", () => {
   it("includes model and disallowed tools", () => {
     const command = buildClaudeCommand({
@@ -205,6 +221,7 @@ describe("buildCommand dispatch", () => {
     mode: "translate",
     timeoutSeconds: 120,
     tool: "pi",
+    program: "llm-translate",
     piCmd: "pi",
     claudeCmd: "claude",
     stdinEndToken: "__NEXT_BATCH__",
@@ -257,6 +274,15 @@ describe("--tool parsing", () => {
     expect(() => parseArgs([...required, "--tool", "gpt"])).toThrow(
       "--tool must be one of: pi, claude",
     )
+  })
+
+  it("rejects --tool when the flag is not allowed", () => {
+    expect(() =>
+      parseArgs([...required, "--tool", "claude"], {
+        toolFlagAllowed: false,
+        program: "pi-translate",
+      }),
+    ).toThrow("--tool is not supported by pi-translate")
   })
 })
 
@@ -775,6 +801,67 @@ describe("main tool selection", () => {
     expect(stderr.data).toContain(
       "--allow-extensions is ignored with --tool claude",
     )
+  })
+
+  it("honors --tool claude when invoked as llm-translate", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.txt")
+    const outputFile = path.join(dir, "out.txt")
+    fs.writeFileSync(inputFile, "a\n", "utf8")
+
+    let seenCommand: string[] = []
+    const exitCode = await main(
+      [inputFile, outputFile, "--setup-context", "ctx", "--tool", "claude"],
+      {
+        stderr: new StringWritable(),
+        translateBatches: async ({ command }) => {
+          seenCommand = command
+          return ["A\n"]
+        },
+      },
+      "/usr/local/bin/llm-translate",
+    )
+
+    expect(exitCode).toBe(0)
+    expect(seenCommand[0]).toBe("claude")
+  })
+
+  it("builds a pi command when invoked as pi-translate", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.txt")
+    const outputFile = path.join(dir, "out.txt")
+    fs.writeFileSync(inputFile, "a\n", "utf8")
+
+    let seenCommand: string[] = []
+    const exitCode = await main(
+      [inputFile, outputFile, "--setup-context", "ctx"],
+      {
+        stderr: new StringWritable(),
+        translateBatches: async ({ command }) => {
+          seenCommand = command
+          return ["A\n"]
+        },
+      },
+      "/usr/local/bin/pi-translate",
+    )
+
+    expect(exitCode).toBe(0)
+    expect(seenCommand[0]).toBe("pi")
+  })
+
+  it("rejects --tool when invoked as pi-translate", async () => {
+    const dir = makeTempDir()
+    const inputFile = path.join(dir, "in.txt")
+    const outputFile = path.join(dir, "out.txt")
+    fs.writeFileSync(inputFile, "a\n", "utf8")
+
+    await expect(
+      main(
+        [inputFile, outputFile, "--setup-context", "ctx", "--tool", "claude"],
+        { stderr: new StringWritable() },
+        "/usr/local/bin/pi-translate",
+      ),
+    ).rejects.toThrow("--tool is not supported by pi-translate")
   })
 })
 

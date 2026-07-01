@@ -7,6 +7,7 @@ export interface TranslationEntry {
 export type InputFormat = "plain" | "csv3" | "json"
 export type TranslationMode = "translate" | "missing" | "review"
 export type Tool = "pi" | "claude"
+export type Program = "llm-translate" | "pi-translate" | "claude-translate"
 
 export interface CliArgs {
   inputFile: string
@@ -18,6 +19,7 @@ export interface CliArgs {
   mode: TranslationMode
   timeoutSeconds: number
   tool: Tool
+  program: Program
   piCmd: string
   claudeCmd: string
   provider?: string

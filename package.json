@@ -1,14 +1,14 @@
 {
-  "name": "pi-translator",
+  "name": "llm-translator",
   "version": "0.2.0",
   "description": "Batch translator for large files using pi or claude",
   "type": "module",
   "license": "GPL-3.0-only",
   "author": "Òscar Casajuana <elboletaire@gmail.com>",
-  "homepage": "https://github.com/elboletaire/pi-translator",
+  "homepage": "https://github.com/elboletaire/llm-translator",
   "repository": {
     "type": "git",
-    "url": "https://github.com/elboletaire/pi-translator.git"
+    "url": "https://github.com/elboletaire/llm-translator.git"
   },
   "keywords": [
     "translator",
@@ -30,6 +30,7 @@
     "node": ">=18.0.0"
   },
   "bin": {
+    "llm-translate": "dist/cli.js",
     "pi-translate": "dist/cli.js",
     "claude-translate": "dist/cli.js"
   },

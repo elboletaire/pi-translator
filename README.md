@@ -1,4 +1,4 @@
-# pi-translator
+# llm-translator
 
 Batch translator for large files using [`pi`](https://github.com/earendil-works/pi) or [`claude`](https://github.com/anthropics/claude-code).
 
@@ -11,14 +11,17 @@ Batch translator for large files using [`pi`](https://github.com/earendil-works/
 
 Progress is printed to stderr as `processing batch X/Y`.
 
-## Choosing a backend
+## Commands
 
-The tool ships two commands that share the same code:
+The package installs three commands that share the same code:
 
-- `pi-translate` — uses [`pi`](https://github.com/earendil-works/pi) (default). Invokes `pi` with `--no-session`, so per-batch calls do not appear in `/resume`.
-- `claude-translate` — uses [`claude`](https://github.com/anthropics/claude-code). Invokes `claude -p` with tools disabled, using your existing Claude CLI authentication (no API key or `--bare` needed).
+- **`pi-translate`** — always uses [`pi`](https://github.com/earendil-works/pi). Invokes `pi` with `--no-session`, so per-batch calls do not appear in `/resume`. Does not accept `--tool`.
+- **`claude-translate`** — always uses [`claude`](https://github.com/anthropics/claude-code). Invokes `claude -p` with tools disabled, using your existing Claude CLI authentication (no API key or `--bare` needed). Does not accept `--tool`.
+- **`llm-translate`** — the generic command. Pick the backend with `--tool <pi|claude>` (defaults to `pi`).
 
-The invoked command name picks the backend. You can also force it explicitly with `--tool <pi|claude>` (useful when running from source via `pnpm start`). Under `--tool claude`, the pi-only flags (`--provider`, `--api-key`, `--allow-extensions`) are ignored with a warning.
+The single-backend commands (`pi-translate`, `claude-translate`) reject `--tool`; use `llm-translate` when you want to choose the backend at call time.
+
+Under the claude backend, the pi-only flags (`--provider`, `--api-key`, `--allow-extensions`) are ignored with a warning.
 
 ## Recovery behavior (csv3)
 
@@ -30,13 +33,13 @@ The invoked command name picks the backend. You can also force it explicitly wit
 
 - Node.js >= 18
 - The backend CLI you intend to use, installed and available in your `PATH`:
-  [`pi`](https://github.com/earendil-works/pi) for `pi-translate`, or
-  [`claude`](https://github.com/anthropics/claude-code) (logged in) for `claude-translate`
+  [`pi`](https://github.com/earendil-works/pi) for the pi backend, or
+  [`claude`](https://github.com/anthropics/claude-code) (logged in) for the claude backend
 
 ## Install
 
 ```bash
-npm install -g pi-translator
+npm install -g llm-translator
 ```
 
 ## Usage
@@ -55,6 +58,16 @@ Same, but with the Claude CLI as the backend:
 
 ```bash
 claude-translate input.txt output.txt \
+  --setup-context "Translate from Spanish to English. Keep character names unchanged." \
+  --model sonnet \
+  --batch-size 40
+```
+
+Or pick the backend at call time with the generic command:
+
+```bash
+llm-translate input.txt output.txt \
+  --tool claude \
   --setup-context "Translate from Spanish to English. Keep character names unchanged." \
   --model sonnet \
   --batch-size 40
@@ -105,13 +118,13 @@ Finish each response with the end token on its own line (example: `<NEXT>`).
 | `--input-format <fmt>` | `plain` | `plain`, `csv3`, or `json` (auto-detected from file extension) |
 | `--mode <mode>` | `translate` | `translate`, `missing` (only empty/absent rows), or `review` |
 | `--timeout-seconds <n>` | `120` | Timeout per backend call |
-| `--tool <tool>` | invoked name | Backend CLI: `pi` or `claude` (defaults from the command name) |
-| `--pi-cmd <cmd>` | `pi` | Command used to invoke pi |
-| `--claude-cmd <cmd>` | `claude` | Command used to invoke claude |
-| `--provider <id>` | | Provider ID passed to pi (ignored with `--tool claude`) |
+| `--tool <tool>` | `pi` | Backend CLI: `pi` or `claude` (**`llm-translate` only**) |
+| `--pi-cmd <cmd>` | `pi` | Command used to invoke pi (pi backend only) |
+| `--claude-cmd <cmd>` | `claude` | Command used to invoke claude (claude backend only) |
+| `--provider <id>` | | Provider ID passed to pi (pi backend only) |
 | `--model <id>` | | Model ID passed to the backend (pi: `gpt-4o`; claude: `sonnet`, `opus`) |
-| `--api-key <key>` | | API key passed to pi (ignored with `--tool claude`) |
-| `--allow-extensions` | | Keep pi extension discovery enabled (ignored with `--tool claude`) |
+| `--api-key <key>` | | API key passed to pi (pi backend only) |
+| `--allow-extensions` | | Keep pi extension discovery enabled (pi backend only) |
 | `--stdin-end-token <token>` | `__NEXT_BATCH__` | Used only with `--provider stdout` |
 
 Compatibility alias: `--pi-mono-cmd` is accepted and mapped to `--pi-cmd`.

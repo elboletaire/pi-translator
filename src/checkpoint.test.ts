@@ -15,7 +15,7 @@ import type { TranslationEntry } from "./types"
 const tempDirs: string[] = []
 
 function makeTempDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-translator-test-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-translator-test-"))
   tempDirs.push(dir)
   return dir
 }
